@@ -1,0 +1,62 @@
+name: Build NumberKeys IPA (unsigned, for sideloading)
+
+# No Apple secrets needed. Produces NumberKeys-unsigned.ipa that you
+# sign/install yourself with Sideloadly, AltStore, TrollStore, etc.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (no code signing)
+        run: |
+          xcodebuild \
+            -project NumberKeys.xcodeproj \
+            -scheme NumberKeys \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      # Embeds the entitlements without a real signature (useful for TrollStore).
+      # Sideloadly/AltStore re-sign anyway, so a failure here is not fatal.
+      - name: Fake-sign with entitlements (optional)
+        continue-on-error: true
+        run: |
+          brew install ldid
+          APP="build/Build/Products/Release-iphoneos/NumberKeys.app"
+          ldid -SNumberKeysKeyboard/NumberKeysKeyboard.entitlements "$APP/PlugIns/NumberKeysKeyboard.appex/NumberKeysKeyboard"
+          ldid -SNumberKeys/NumberKeys.entitlements "$APP/NumberKeys"
+
+      - name: Package IPA
+        run: |
+          APP="build/Build/Products/Release-iphoneos/NumberKeys.app"
+          test -d "$APP/PlugIns/NumberKeysKeyboard.appex" || { echo "Keyboard extension missing from app"; exit 1; }
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry NumberKeys-unsigned.ipa Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NumberKeys-IPA
+          path: NumberKeys-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
